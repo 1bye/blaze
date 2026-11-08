@@ -300,6 +300,16 @@ impl ObjectModule {
     }
 }
 
+// blaze: LLVM's leading byte 1 names an exact symbol, without the target's prefix.
+fn add_named_symbol(object: &mut Object<'_>, symbol: Symbol) -> SymbolId {
+    let verbatim = symbol.name.strip_prefix(&[1]).map(<[u8]>::to_vec);
+    let id = object.add_symbol(symbol);
+    if let Some(name) = verbatim {
+        object.symbol_mut(id).name = name;
+    }
+    id
+}
+
 fn validate_symbol(name: &str) -> ModuleResult<()> {
     // null bytes are not allowed in symbol names and will cause the `object`
     // crate to panic. Let's return a clean error instead.
@@ -339,7 +349,7 @@ impl Module for ObjectModule {
             symbol.scope = scope;
             symbol.weak = weak;
         } else {
-            let symbol_id = self.object.add_symbol(Symbol {
+            let symbol_id = add_named_symbol(&mut self.object, Symbol {
                 name: name.as_bytes().to_vec(),
                 value: 0,
                 size: 0,
@@ -406,7 +416,7 @@ impl Module for ObjectModule {
             symbol.scope = scope;
             symbol.weak = weak;
         } else {
-            let symbol_id = self.object.add_symbol(Symbol {
+            let symbol_id = add_named_symbol(&mut self.object, Symbol {
                 name: name.as_bytes().to_vec(),
                 value: 0,
                 size: 0,

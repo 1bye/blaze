@@ -4543,7 +4543,8 @@ fn global_prefix() -> Option<char> {
 /// takes it: bindgen writes `"\u{1}_aws_lc_0_44_0_SHA384"` for macOS. The object writer puts
 /// the target's `prefix` in front of what is declared, so it comes off here; declared with it,
 /// the call named `_\u{1}_aws_lc_0_44_0_SHA384`, and the link found nothing of that name. One
-/// that does not start with the prefix is kept whole, and the link says it can't find it.
+/// that does not start with the prefix keeps the marker for the object writer to suppress
+/// its prefix.
 fn as_declared(name: &str, prefix: Option<char>) -> String {
     let Some(written) = name.strip_prefix('\u{1}') else { return name.to_owned() };
     match prefix {
@@ -7172,6 +7173,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         // On wasm the section a static asks for is a custom section of the module, which
         // holds a copy of its bytes; the static itself stays in memory like any other.
         let custom = asked.as_ref().filter(|_| Target::current().writes_wasm_objects());
+        let used = AttrFlags::query(db, id.into()).contains(AttrFlags::USED)
+            && !AttrFlags::used_by_compiler(db, id.into());
         let section =
             asked.as_ref().filter(|_| custom.is_none()).map(|it| it.as_str()).or_else(|| {
                 named.then(|| Target::current().section_of_static(compiled.writable)).flatten()
@@ -7197,7 +7200,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 if let Some(custom) = custom {
                     self.custom_sections.push((custom.as_str().to_owned(), blob.bytes.clone()));
                 }
-                self.fill_data(data, blob, section)?;
+                self.fill_data(data, blob, section, used)?;
                 Ok(data)
             }
             Err(e) => {
@@ -7213,7 +7216,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                     align: 1,
                     type_ids: Vec::new(),
                 };
-                self.fill_data(data, nothing, section)?;
+                self.fill_data(data, nothing, section, used)?;
                 Err(e)
             }
         }
@@ -7749,7 +7752,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             return Ok(id);
         }
         let id = self.declare_local_data(writable)?;
-        self.fill_data(id, blob, None)?;
+        self.fill_data(id, blob, None, false)?;
         if let Some(blob) = shared {
             self.consts.insert(blob, id);
         }
@@ -7867,7 +7870,13 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
     }
 
     /// Defines `id` as `blob`, in the section named `section` when there is one.
-    fn fill_data(&mut self, id: DataId, mut blob: ConstBlob, section: Option<&str>) -> Result<()> {
+    fn fill_data(
+        &mut self,
+        id: DataId,
+        mut blob: ConstBlob,
+        section: Option<&str>,
+        used: bool,
+    ) -> Result<()> {
         self.hash_type_ids(&mut blob)?;
         let mut data = DataDescription::new();
         if let Some(section) = section {
@@ -7875,6 +7884,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         }
         data.define(blob.bytes.into_boxed_slice());
         data.set_align(blob.align);
+        data.set_used(used);
         for (offset, target, addend) in blob.relocs {
             let target = self.module.declare_data_in_data(target, &mut data);
             data.write_data_addr(offset, target, addend);
@@ -19455,6 +19465,56 @@ mod tests {
         assert_eq!(as_declared("\u{1}aws_lc_0_44_0_SHA384", None), "aws_lc_0_44_0_SHA384");
         assert_eq!(as_declared("SHA384", Some('_')), "SHA384");
         assert_eq!(as_declared("\u{1}SHA384", Some('_')), "\u{1}SHA384");
+    }
+
+    /// Verbatim link names survive the object writer on prefixed and unprefixed targets.
+    #[test]
+    fn verbatim_function_and_data_symbols_have_their_exact_names() {
+        use cranelift_codegen::settings;
+        use cranelift_module::{DataDescription, Linkage, Module, default_libcall_names};
+        use cranelift_object::{ObjectBuilder, ObjectModule};
+        use object::{Object, ObjectSymbol};
+
+        for (target, prefix) in [
+            ("aarch64-apple-darwin", "_"),
+            ("x86_64-unknown-linux-gnu", ""),
+            ("x86_64-pc-windows-msvc", ""),
+        ] {
+            let isa = cranelift_codegen::isa::lookup(target.parse().unwrap())
+                .unwrap()
+                .finish(settings::Flags::new(settings::builder()))
+                .unwrap();
+            let builder = ObjectBuilder::new(isa, "verbatim", default_libcall_names()).unwrap();
+            let mut module = ObjectModule::new(builder);
+            let sig = module.make_signature();
+            for name in ["plain_function", "\u{1}raw_function", "\u{1}_prefixed_function"] {
+                module.declare_function(name, Linkage::Import, &sig).unwrap();
+            }
+            for name in ["plain_data", "\u{1}raw_data", "\u{1}_prefixed_data"] {
+                module.declare_data(name, Linkage::Import, false, false).unwrap();
+            }
+            let export =
+                module.declare_data("\u{1}raw_export", Linkage::Export, false, false).unwrap();
+            let mut data = DataDescription::new();
+            data.define(Box::new(42_u64.to_le_bytes()));
+            module.define_data(export, &data).unwrap();
+
+            let bytes = module.finish().emit().unwrap();
+            let file = object::File::parse(&*bytes).unwrap();
+            let names: Vec<_> = file.symbols().filter_map(|symbol| symbol.name().ok()).collect();
+            for name in [
+                format!("{prefix}plain_function"),
+                format!("{prefix}plain_data"),
+                "raw_function".to_owned(),
+                "raw_data".to_owned(),
+                "_prefixed_function".to_owned(),
+                "_prefixed_data".to_owned(),
+                "raw_export".to_owned(),
+            ] {
+                assert!(names.contains(&name.as_str()), "{target}: missing {name}: {names:?}");
+            }
+            assert!(names.iter().all(|name| !name.contains('\u{1}')), "{target}: {names:?}");
+        }
     }
 
     /// `emit` names the function itself by a placeholder id until it is stitched, and

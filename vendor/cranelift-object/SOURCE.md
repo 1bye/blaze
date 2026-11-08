@@ -25,3 +25,8 @@ Changes, each marked `blaze:` in src/backend.rs:
 3. `used` marks a Mach-O symbol `N_NO_DEAD_STRIP` after the symbol is defined. Upstream did it
    before, which fixed the symbol's flags as those of an undefined one: the object had each
    `used` data object as an undefined external (`n_type` `N_UNDF | N_EXT`) with a section.
+
+4. A symbol beginning with LLVM's byte-1 verbatim marker is emitted without that marker or
+   the target's global prefix. This applies to function and data declarations alike, including
+   Mach-O section-boundary symbols used by ctor/link-section. Ordinary names retain the
+   object's default mangling.

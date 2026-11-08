@@ -959,6 +959,26 @@ impl AttrFlags {
         })
     }
 
+    /// Explicit compiler-only retention, which must not keep a static alive at link time.
+    #[salsa::tracked(returns(copy))]
+    pub fn used_by_compiler(db: &dyn SourceDatabase, owner: AttrDefId) -> bool {
+        collect_attrs(db, owner, |attr| {
+            if let ast::Meta::TokenTreeMeta(attr) = attr
+                && attr.path().is1("used")
+                && let Some(tt) = attr.token_tree()
+                && TokenTreeChildren::new(&tt).any(|child| {
+                    matches!(child, NodeOrToken::Token(token)
+                        if token.kind() == SyntaxKind::IDENT
+                            && token.text().strip_prefix("r#").unwrap_or(token.text()) == "compiler")
+                })
+            {
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        })
+        .is_some()
+    }
+
     /// The section `#[link_section]` puts an item in.
     #[salsa::tracked(returns(clone))]
     pub fn link_section(db: &dyn SourceDatabase, owner: AttrDefId) -> Option<Symbol> {
@@ -1784,6 +1804,23 @@ mod tests {
     use crate::AttrDefId;
     use crate::attrs::AttrFlags;
     use crate::test_db::TestDB;
+
+    #[test]
+    fn compiler_only_used_is_distinct_from_linker_retention() {
+        for (attr, compiler_only) in [
+            ("used", false),
+            ("used(linker)", false),
+            ("used(compiler)", true),
+            ("used(r#compiler)", true),
+        ] {
+            let fixture = format!("//- /lib.rs crate:foo crate-attr:{attr}\n");
+            let (db, file_id) = TestDB::with_single_file(&fixture);
+            let module = db.module_for_file(file_id.file_id(&db));
+            let owner = AttrDefId::ModuleId(module);
+            assert!(AttrFlags::query(&db, owner).contains(AttrFlags::USED));
+            assert_eq!(AttrFlags::used_by_compiler(&db, owner), compiler_only, "{attr}");
+        }
+    }
 
     #[test]
     fn crate_attrs() {
