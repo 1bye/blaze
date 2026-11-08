@@ -97,6 +97,8 @@ fn engine() -> &'static Engine {
         let mut config = Config::new();
         config.cranelift_nan_canonicalization(true);
         config.parallel_compilation(true);
+        // Rust's small iterator and token helpers dominate repeated macro execution.
+        config.compiler_inlining(wasmtime::Inlining::Yes);
         // A target given turns off Cranelift's reading of the host's CPU features, which
         // would put them in `code_key` and part hosts of one kind (CI's runners are AMD and
         // Intel) that should share machine code.
@@ -1823,6 +1825,26 @@ mod tests {
         _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn inlining_changes_the_machine_code_compatibility_key() {
+        use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+
+        let enabled = engine();
+        let mut config = enabled.config().clone();
+        config.compiler_inlining(wasmtime::Inlining::No);
+        let disabled = Engine::new(&config).expect("the same configuration without inlining");
+        let key = |engine: &Engine| {
+            let mut hash = DefaultHasher::new();
+            engine.precompile_compatibility_hash().hash(&mut hash);
+            hash.finish()
+        };
+        assert_ne!(
+            key(enabled),
+            key(&disabled),
+            "code_key must not reuse machine code compiled without inlining"
+        );
     }
 
     #[test]
