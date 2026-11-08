@@ -65,6 +65,15 @@ impl Chosen {
             Chosen::Rustup(dir) | Chosen::Own(dir) => dir,
         }
     }
+
+    /// Resolve toolchain aliases before deriving paths passed into a sandbox.
+    fn canonical(self) -> std::io::Result<Chosen> {
+        let dir = std::fs::canonicalize(self.dir())?;
+        Ok(match self {
+            Chosen::Rustup(_) => Chosen::Rustup(dir),
+            Chosen::Own(_) => Chosen::Own(dir),
+        })
+    }
 }
 
 impl std::fmt::Display for Chosen {
@@ -98,6 +107,7 @@ pub fn found() -> Option<Chosen> {
             Chosen::Own(dir)
         }
     };
+    let chosen = chosen.canonical().ok()?;
     let _ = FOUND.set(chosen.dir().to_owned());
     Some(chosen)
 }
@@ -112,7 +122,9 @@ pub fn known_at(sysroot: PathBuf) {
 }
 
 fn chosen_at(dir: PathBuf) -> Chosen {
-    let own = own::Release::ours().and_then(|it| it.dir());
+    let own = own::Release::ours()
+        .and_then(|it| it.dir())
+        .and_then(|dir| std::fs::canonicalize(dir).ok());
     if own.as_deref() == Some(&*dir) { Chosen::Own(dir) } else { Chosen::Rustup(dir) }
 }
 
@@ -164,7 +176,7 @@ fn release() -> Result<Chosen, String> {
             Chosen::Own(dir)
         }
     };
-    Ok(chosen)
+    chosen.canonical().map_err(|error| format!("resolving the toolchain directory: {error}"))
 }
 
 /// Has every process this one starts run blaze's release at `dir`: cargo and the daemon from
@@ -270,6 +282,22 @@ fn installed(home: &Path, release: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_toolchain_alias_resolves_before_its_tools_are_named() {
+        let temp = tempfile::tempdir().expect("temporary toolchain directory");
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(real.join("bin")).expect("toolchain bin directory");
+        std::fs::write(real.join("bin/cargo"), b"cargo").expect("toolchain cargo");
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).expect("toolchain alias");
+        let chosen = Chosen::Own(alias).canonical().expect("resolved toolchain");
+        let expected = std::fs::canonicalize(&real).expect("real toolchain path");
+        assert_eq!(chosen.dir(), expected, "the alias must not enter the crate environment");
+        assert!(chosen.dir().join("bin/cargo").is_file());
+        assert!(matches!(chosen, Chosen::Own(_)), "preserve the toolchain origin");
+    }
 
     #[test]
     fn a_rust_version_up_to_blazes_release_builds() {
