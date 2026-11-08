@@ -15936,6 +15936,21 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 }
                 self.builder.ins().store(MEM, acc, dst, 0);
             }
+            ("simd_minimum_number_nsz" | "simd_maximum_number_nsz", [a, b])
+                if self.cg.target.arch == Arch::Aarch64 =>
+            {
+                let a_ty = self.operand_ty(a)?;
+                let b_ty = self.operand_ty(b)?;
+                let (lanes, _) = self.neon_lanes_of(a_ty)?;
+                let (other, _) = self.neon_lanes_of(b_ty)?;
+                let (result, _) = self.neon_lanes_of(dst_ty)?;
+                let Some(lowered) =
+                    neon::number_min_max(name, lanes).filter(|_| lanes == other && lanes == result)
+                else {
+                    unsupported!("`{name}` of unequal or unsupported NEON float vectors");
+                };
+                self.neon_assembly(name, &lowered, args, dst, dst_ty)?;
+            }
             // Each float lane to an integral float, as rustc's LLVM `trunc`, `round` (ties
             // away from zero) and `rint` (in the current mode, which is to even) select on
             // AArch64, of lanes of any float's width.

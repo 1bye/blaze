@@ -173,6 +173,24 @@ pub(super) fn rounding(mnemonic: &str, lanes: Lanes) -> Option<Lowered> {
     Some(finish(instruction_of(mnemonic, lanes, lanes)?, &[lanes]))
 }
 
+/// AArch64's lowering of minimumNumber/maximumNumber with unordered zeros. Quiet each
+/// NaN first, as pinned rustc does: `fminnm` alone propagates a signaling NaN instead of
+/// returning the other numeric operand, contrary to the Rust intrinsic's contract.
+pub(super) fn number_min_max(name: &str, lanes: Lanes) -> Option<Lowered> {
+    if !lanes.float || lanes.bits != 32 || !matches!(lanes.count, 2 | 4) {
+        return None;
+    }
+    let op = match name {
+        "simd_minimum_number_nsz" => "fminnm",
+        "simd_maximum_number_nsz" => "fmaxnm",
+        _ => return None,
+    };
+    let mut lowered = neon(op, &[lanes])?;
+    let (a, b) = (lanes.reg(1), lanes.reg(2));
+    lowered.text = format!("fminnm {a}, {a}, {a}\nfminnm {b}, {b}, {b}\n{}", lowered.text);
+    Some(finish(lowered, &[lanes]))
+}
+
 /// The generic intrinsic `op` (`simd_add`, `simd_lt`, `simd_cast`, ...) where its operands'
 /// lanes `a` or its result's `r` are halves, as AArch64's LLVM selects it in a function with
 /// the half-precision instructions: one instruction on the lanes, which rounds once and
@@ -448,10 +466,11 @@ fn neon(op: &str, types: &[Lanes]) -> Option<Lowered> {
             let op = &op["scalar.".len()..];
             instruction(&[], format!("{op} {}, {}", r.reg(0), a.reg(1)), [a], [r])
         }
-        // Shifted right by `#imm`, rounded, into lanes of half the width.
-        ("rshrn", &[r]) if r.is_int() && r.bytes() == 8 => {
+        // Shifted right into lanes of half the width: rounded (`rshrn`), or signed to
+        // unsigned with saturation (`sqshrun`). The instruction preserves FPSR.QC too.
+        ("rshrn" | "sqshrun", &[r]) if r.is_int() && r.bytes() == 8 && r.bits <= 32 => {
             let a = r.with_bits(2 * r.bits);
-            let text = format!("rshrn {}, {}, #{{imm}}", r.reg(0), a.reg(1));
+            let text = format!("{op} {}, {}, #{{imm}}", r.reg(0), a.reg(1));
             taking(instruction(&[], text, [a], [r]), Immediate::of(1, 1..=r.bits))
         }
         ("raddhn" | "rsubhn", &[r]) if r.is_int() && r.bytes() == 8 => {
@@ -611,8 +630,16 @@ fn crypto(op: &str, types: &[Lanes]) -> Option<Lowered> {
 /// even (`roundeven`), and to integers saturated, a NaN 0 (`fptosi.sat`).
 fn generic(op: &str, types: &[Lanes]) -> Option<Lowered> {
     match (op, types) {
-        ("roundeven" | "nearbyint", &[t]) if t.float && t.is_scalar_or_register() => {
-            let mnemonic = if op == "roundeven" { "frintn" } else { "frinti" };
+        ("roundeven" | "nearbyint" | "round" | "floor" | "ceil", &[t])
+            if t.float && t.is_scalar_or_register() =>
+        {
+            let mnemonic = match op {
+                "roundeven" => "frintn",
+                "nearbyint" => "frinti",
+                "round" => "frinta",
+                "floor" => "frintm",
+                _ => "frintp",
+            };
             instruction_of(mnemonic, t, t)
         }
         ("fptosi.sat" | "fptoui.sat", &[r, a])
@@ -995,6 +1022,9 @@ aarch64.neon.facgt.i32.f16: facgt h0, h1, h2 [\"neon\", \"fp16\"]
             ("aarch64.neon.vcvtfp2fxs.v8i16.v8f16", "fcvtzs v0.8h, v1.8h, #{imm}", 1, 1..=16),
             ("aarch64.neon.vsli.v1i64", "mov v0.16b, v1.16b; sli d0, d2, #{imm}", 2, 0..=63),
             ("aarch64.neon.rshrn.v8i8", "rshrn v0.8b, v1.8h, #{imm}", 1, 1..=8),
+            ("aarch64.neon.sqshrun.v8i8", "sqshrun v0.8b, v1.8h, #{imm}", 1, 1..=8),
+            ("aarch64.neon.sqshrun.v4i16", "sqshrun v0.4h, v1.4s, #{imm}", 1, 1..=16),
+            ("aarch64.neon.sqshrun.v2i32", "sqshrun v0.2s, v1.2d, #{imm}", 1, 1..=32),
             ("aarch64.neon.sqshlu.v4i32", "sqshlu v0.4s, v1.4s, #{imm}", 1, 0..=31),
             ("aarch64.crypto.xar", "xar v0.2d, v1.2d, v2.2d, #{imm}", 2, 0..=63),
             (
@@ -1034,5 +1064,30 @@ aarch64.neon.facgt.i32.f16: facgt h0, h1, h2 [\"neon\", \"fp16\"]
         assert_eq!(lower("aarch64.crypto.xar").unwrap().features, ["neon", "sha3"]);
         assert!(lower("aarch64.neon.vcvtfxs2fp.v2f64.v2i32").is_none());
         assert!(lower("aarch64.neon.vsli.v4f32").is_none());
+    }
+    #[test]
+    fn gpui_rounding_and_number_minmax_match_neon_instructions() {
+        for (name, text) in [
+            ("round.v4f32", "frinta v0.4s, v1.4s"),
+            ("floor.v2f32", "frintm v0.2s, v1.2s"),
+            ("ceil.v2f32", "frintp v0.2s, v1.2s"),
+        ] {
+            assert_eq!(lower(name).unwrap().text, text, "{name}");
+        }
+        let lanes = Lanes::floats(32, 2);
+        for (name, op) in
+            [("simd_minimum_number_nsz", "fminnm"), ("simd_maximum_number_nsz", "fmaxnm")]
+        {
+            let lowered = number_min_max(name, lanes).unwrap();
+            assert_eq!(
+                lowered.text,
+                format!(
+                    "fminnm v1.2s, v1.2s, v1.2s\nfminnm v2.2s, v2.2s, v2.2s\n{op} v0.2s, v1.2s, v2.2s"
+                )
+            );
+            assert_eq!((lowered.args, lowered.results), (vec![Some(8), Some(8)], vec![8]));
+        }
+        assert!(number_min_max("simd_minimum_number_nsz", Lanes::floats(64, 2)).is_none());
+        assert!(lower("aarch64.neon.sqshrun.v1i64").is_none());
     }
 }
