@@ -253,10 +253,10 @@ impl FrameStorage for MirBody<'_> {
         // Every two locals with storage at the same point conflict. A marked local mentioned
         // where it may have no storage has it all through the body.
         let mut conflicts = BitMatrix::new(count, count);
-        let all_pairs = |conflicts: &mut BitMatrix<usize, usize>, at_once: &DenseBitSet<usize>| {
-            for at in at_once.iter() {
-                conflicts.union_row_with(at_once, at);
-            }
+        let mut previous = DenseBitSet::new_empty(count);
+        let mut all_pairs = |conflicts: &mut BitMatrix<usize, usize>,
+                             at_once: &DenseBitSet<usize>| {
+            add_conflicts(conflicts, &mut previous, at_once);
         };
         for (id, block) in self.basic_blocks.iter() {
             let Some(mut storage) = entry[block_index(id)].clone() else { continue };
@@ -334,5 +334,71 @@ impl FrameStorage for MirBody<'_> {
             }
         }
         StorageConflicts { always, conflicts }
+    }
+}
+
+fn add_conflicts(
+    conflicts: &mut BitMatrix<usize, usize>,
+    previous: &mut DenseBitSet<usize>,
+    at_once: &DenseBitSet<usize>,
+) {
+    let mut added = at_once.clone();
+    added.subtract(previous);
+    if added.is_empty() {
+        return;
+    }
+    // Pairs among unchanged locals were already recorded for the previous clique.
+    if added.count() <= at_once.domain_size().div_ceil(u64::BITS as usize) {
+        for at in added.iter() {
+            for other in at_once.iter() {
+                conflicts.insert(at, other);
+                conflicts.insert(other, at);
+            }
+        }
+    } else {
+        for at in at_once.iter() {
+            conflicts.union_row_with(at_once, at);
+        }
+    }
+    previous.clone_from(at_once);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflict_deltas_match_dense_cliques() {
+        for count in [1, 2, 8, 63, 64, 65, 127, 513] {
+            let mut expected = BitMatrix::new(count, count);
+            let mut actual = BitMatrix::new(count, count);
+            let mut previous = DenseBitSet::new_empty(count);
+            let mut live = DenseBitSet::new_empty(count);
+            let mut seed = 0x5eed_u64;
+            for step in 0..160 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let at = (seed >> 32) as usize % count;
+                if step != 0 && step % 29 == 0 {
+                    live.clear();
+                    for at in 0..count {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        if seed >> 63 != 0 {
+                            live.insert(at);
+                        }
+                    }
+                } else if step % 19 == 0 {
+                    live.clear();
+                } else if step % 3 == 0 {
+                    live.remove(at);
+                } else {
+                    live.insert(at);
+                }
+                for at in live.iter() {
+                    expected.union_row_with(&live, at);
+                }
+                add_conflicts(&mut actual, &mut previous, &live);
+                assert!(actual == expected, "{count} locals, live-set update {step}");
+            }
+        }
     }
 }
