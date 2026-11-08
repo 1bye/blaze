@@ -142,12 +142,11 @@ const OWN_RUSTC: &str = "blaze-rustc";
 const OWN_RUSTC_FOR: [&str; 4] =
     ["RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", crate::as_rustc::TOOLCHAIN];
 
-/// `env`, cargo's for a script, with `RUSTC` naming blaze as rustc ([`crate::as_rustc`]),
-/// linked in `scratch`, and the rustc of blaze's release in [`crate::as_rustc::TOOLCHAIN`],
-/// whichever rustc cargo named: what the script asks rustc, its version, the cfgs, whether a
-/// probe compiles, is blaze's to answer, and no rustc runs. Cargo's wrappers are taken out,
-/// as with no `build.rustc-wrapper` configured: a script runs `$RUSTC_WRAPPER $RUSTC`, and
-/// blaze's wrapper would run rustc. A script cargo gave no `RUSTC` is left as it is.
+/// The script's compiler environment. With both native host settings explicitly `0`,
+/// probes use the selected toolchain's rustc, as the host build does. Otherwise `RUSTC`
+/// names blaze as rustc ([`crate::as_rustc`]), linked in `scratch`, and the toolchain's
+/// rustc is named in [`crate::as_rustc::TOOLCHAIN`]. Cargo's wrappers are removed in both
+/// modes. A script cargo gave no `RUSTC` is left as it is.
 fn with_own_rustc(
     env: &[(String, String)],
     scratch: &Path,
@@ -159,7 +158,25 @@ fn with_own_rustc(
         format!("blaze's toolchain, Rust {}, is not installed", super::toolchain::OURS.trim())
     })?;
     let rustc = sysroot.join("bin").join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+    script_rustc_env(env, scratch, &rustc)
+}
+
+/// Host-code probes use the compiler selected for the host build, inside the same sandbox.
+fn script_rustc_env(
+    env: &[(String, String)],
+    scratch: &Path,
+    rustc: &Path,
+) -> anyhow::Result<Vec<(String, String)>> {
     let rustc = rustc.to_str().context("a toolchain whose path is not text")?.to_owned();
+    let hybrid = [super::own_macro::WASM, super::own_macro::SERVER]
+        .iter()
+        .all(|key| env.iter().any(|(name, value)| name.as_str() == *key && value == "0"));
+    if hybrid {
+        let mut env: Vec<_> =
+            env.iter().filter(|it| !OWN_RUSTC_FOR.contains(&it.0.as_str())).cloned().collect();
+        env.push(("RUSTC".to_owned(), rustc));
+        return Ok(env);
+    }
     let dir = scratch.join(OWN_RUSTC);
     std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
     let link = dir.join(format!("{}{}", crate::as_rustc::NAME, std::env::consts::EXE_SUFFIX));
@@ -952,5 +969,44 @@ mod tests {
         let out =
             Path::new("/w/target/x86_64-unknown-linux-gnu/debug/build/x/0123456789abcdef/out");
         assert_eq!(target_of(out), Some(Path::new("/w/target/x86_64-unknown-linux-gnu")));
+    }
+}
+
+#[cfg(test)]
+mod host_probe_tests {
+    use super::*;
+
+    #[test]
+    fn hybrid_probes_name_the_host_compiler_without_a_wrapper() {
+        let temp = tempfile::tempdir().expect("host probe scratch directory");
+        let rustc = temp.path().join("toolchain/bin/rustc");
+        let input = [
+            (super::super::own_macro::WASM.to_owned(), "0".to_owned()),
+            (super::super::own_macro::SERVER.to_owned(), "0".to_owned()),
+            ("RUSTC".to_owned(), "/temporary/alias/rustc".to_owned()),
+            ("RUSTC_WRAPPER".to_owned(), "/wrapper".to_owned()),
+            ("RUSTC_WORKSPACE_WRAPPER".to_owned(), "/workspace-wrapper".to_owned()),
+            (crate::as_rustc::TOOLCHAIN.to_owned(), "/old/rustc".to_owned()),
+            ("OUT_DIR".to_owned(), "/output".to_owned()),
+        ];
+        let actual = script_rustc_env(&input, temp.path(), &rustc).expect("host compiler env");
+        let value = |name: &str| actual.iter().find(|it| it.0 == name).map(|it| it.1.as_str());
+        assert_eq!(value("RUSTC"), rustc.to_str(), "probes use the native host compiler");
+        assert_eq!(value("OUT_DIR"), Some("/output"), "keep the build-script environment");
+        for name in OWN_RUSTC_FOR.iter().filter(|&&name| name != "RUSTC") {
+            assert_eq!(value(name), None, "remove obsolete compiler wrapper {name}");
+        }
+        assert!(!temp.path().join(OWN_RUSTC).exists(), "hybrid probes need no Blaze alias");
+        for key in [super::super::own_macro::WASM, super::super::own_macro::SERVER] {
+            let all_blaze: Vec<_> = input.iter().filter(|it| it.0 != key).cloned().collect();
+            let actual =
+                script_rustc_env(&all_blaze, temp.path(), &rustc).expect("Blaze compiler env");
+            let selected = actual.iter().find(|it| it.0 == "RUSTC").expect("probe compiler");
+            assert_eq!(
+                Path::new(&selected.1),
+                temp.path().join(OWN_RUSTC).join(crate::as_rustc::NAME),
+                "both explicit native settings are required"
+            );
+        }
     }
 }
