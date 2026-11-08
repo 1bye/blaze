@@ -6072,6 +6072,8 @@ pub mod x86_instructions {
             vec![
                 epi(_mm_aesenc_si128(a, k)), epi(_mm_aesenclast_si128(a, k)), epi(_mm_aesdec_si128(a, k)),
                 epi(_mm_aesdeclast_si128(a, k)), epi(_mm_aesimc_si128(a)),
+                epi(_mm_aeskeygenassist_si128::<0>(a)), epi(_mm_aeskeygenassist_si128::<5>(a)),
+                epi(_mm_aeskeygenassist_si128::<128>(a)), epi(_mm_aeskeygenassist_si128(a, 255)),
             ]
         }
     }

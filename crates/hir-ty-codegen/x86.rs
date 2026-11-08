@@ -115,6 +115,12 @@ pub(super) fn lower(name: &str) -> Option<Lowered> {
             let mnemonic = op.split('.').skip(1).collect::<String>();
             lowered(format!("{mnemonic} xmm0, xmm0"), &[x0], &[x0], &[])
         }
+        "aesni.aeskeygenassist" => Some(Lowered {
+            text: "aeskeygenassist xmm0, xmm0, {imm}".to_owned(),
+            args: vec![Some(x0), None],
+            results: vec![x0],
+            clobbers: Vec::new(),
+        }),
         // The first lane to an integer, rounded as MXCSR says (`t` toward zero); past the
         // integer's range or a NaN, its least.
         "sse.cvtss2si" | "sse.cvttss2si" | "sse2.cvtsd2si" | "sse2.cvttsd2si" => {
@@ -421,6 +427,7 @@ mod tests {
             "x86.ssse3.pmul.hr.sw.128",
             "x86.ssse3.psign.d.128",
             "x86.aesni.aesdeclast",
+            "x86.aesni.aeskeygenassist",
             "x86.vgf2p8mulb.128",
             "x86.sse.rsqrt.ss",
             "x86.sse2.cvttpd2dq",
@@ -453,6 +460,7 @@ x86.sse2.psra.w: psraw xmm0, xmm1 [Some(\"xmm0\"), Some(\"xmm1\")] -> [\"xmm0\"]
 x86.ssse3.pmul.hr.sw.128: pmulhrsw xmm0, xmm1 [Some(\"xmm0\"), Some(\"xmm1\")] -> [\"xmm0\"]
 x86.ssse3.psign.d.128: psignd xmm0, xmm1 [Some(\"xmm0\"), Some(\"xmm1\")] -> [\"xmm0\"]
 x86.aesni.aesdeclast: aesdeclast xmm0, xmm1 [Some(\"xmm0\"), Some(\"xmm1\")] -> [\"xmm0\"]
+x86.aesni.aeskeygenassist: aeskeygenassist xmm0, xmm0, {imm} [Some(\"xmm0\"), None] -> [\"xmm0\"]
 x86.vgf2p8mulb.128: gf2p8mulb xmm0, xmm1 [Some(\"xmm0\"), Some(\"xmm1\")] -> [\"xmm0\"]
 x86.sse.rsqrt.ss: rsqrtss xmm0, xmm0 [Some(\"xmm0\")] -> [\"xmm0\"]
 x86.sse2.cvttpd2dq: cvttpd2dq xmm0, xmm0 [Some(\"xmm0\")] -> [\"xmm0\"]
