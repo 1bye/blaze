@@ -73,6 +73,23 @@ pub enum JobsConfig {
     String(String),
 }
 
+impl JobsConfig {
+    /// Resolves Cargo's job count against the host's logical CPU count.
+    pub fn resolve(&self, available: u32) -> anyhow::Result<u32> {
+        match self {
+            Self::Integer(0) => anyhow::bail!("jobs may not be 0"),
+            Self::Integer(jobs) if *jobs < 0 => {
+                Ok((i64::from(available) + i64::from(*jobs)).max(1) as u32)
+            }
+            Self::Integer(jobs) => Ok(*jobs as u32),
+            Self::String(jobs) if jobs == "default" => Ok(available.max(1)),
+            Self::String(jobs) => anyhow::bail!(
+                "could not parse `{jobs}`. Number of parallel jobs should be `default` or a number."
+            ),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for JobsConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         UntaggedEnumVisitor::new()

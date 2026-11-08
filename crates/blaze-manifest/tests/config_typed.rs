@@ -52,6 +52,41 @@ fn macos() -> Vec<Cfg> {
 
 const HOST: &str = "aarch64-apple-darwin";
 
+#[test]
+fn jobs_resolve_cargos_counts_and_reject_invalid_values() {
+    use blaze_manifest::config::JobsConfig::{Integer, String as Text};
+    for (value, expected) in [
+        (Integer(1), 1),
+        (Integer(32), 32),
+        (Integer(-1), 11),
+        (Integer(-50), 1),
+        (Integer(i32::MIN), 1),
+        (Text("default".into()), 12),
+    ] {
+        assert_eq!(value.resolve(12).unwrap(), expected, "{value:?}");
+    }
+    assert_eq!(Integer(0).resolve(12).unwrap_err().to_string(), "jobs may not be 0");
+    for value in ["invalid", "2"] {
+        assert!(Text(value.into()).resolve(12).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn jobs_read_environment_and_cli_over_config() {
+    let tree = Tree::new("jobs", &[(".cargo/config.toml", "[build]\njobs = 4\n")]);
+    let count = |config: &Config| {
+        config.build_config().unwrap().jobs.as_ref().unwrap().resolve(12).unwrap()
+    };
+    assert_eq!(count(&tree.config(&[])), 4);
+    assert_eq!(count(&tree.config(&[("CARGO_BUILD_JOBS", "2")])), 2);
+    let vars = [
+        ("CARGO_HOME".to_owned(), tree.root.join("home").display().to_string()),
+        ("CARGO_BUILD_JOBS".to_owned(), "2".to_owned()),
+    ];
+    let config = Config::load(&tree.root, vars, &["build.jobs=1".into()]).unwrap();
+    assert_eq!(count(&config), 1);
+}
+
 const RUSTFLAGS: &str = r#"
 [build]
 rustflags = ["--cfg", "from_build"]

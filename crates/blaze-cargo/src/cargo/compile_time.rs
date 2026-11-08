@@ -152,8 +152,8 @@ struct Driver<'a> {
     manifest: PathBuf,
     selection: Selection,
     extra_env: FxHashMap<String, Option<String>>,
-    /// The unit graph of the build with [`own_macro::WASM_TARGET`] as its host, made once a
-    /// module links a crate with dependencies of that platform alone.
+    /// The auxiliary graph of each proc macro, with [`own_macro::WASM_TARGET`] as its
+    /// host, made only when it links dependencies of that platform alone.
     ///
     /// [`own_macro::WASM_TARGET`]: super::own_macro::WASM_TARGET
     wasm_graph: OnceLock<Result<Arc<UnitGraph>, String>>,
@@ -283,7 +283,12 @@ impl<'a> Driver<'a> {
             rustc_workspace_wrapper: None,
             linker: None,
         };
-        let jobs = std::thread::available_parallelism().map_or(1, |it| it.get());
+        let available = std::thread::available_parallelism().map_or(1, |it| it.get());
+        let available = u32::try_from(available).context("the logical CPU count exceeds u32")?;
+        let jobs = match &settings.build_config()?.jobs {
+            Some(jobs) => jobs.resolve(available)?,
+            None => available,
+        };
         Ok(Driver {
             cargo,
             graph,
@@ -296,7 +301,7 @@ impl<'a> Driver<'a> {
             inherited,
             config_env,
             tools,
-            jobs: u32::try_from(jobs).unwrap_or(1),
+            jobs,
             made: Mutex::new(Made_::default()),
             native: None,
             manifest: manifest.to_owned(),
@@ -506,8 +511,11 @@ impl<'a> Driver<'a> {
                 Spec { id: id(at), kind, name, deps, pool: Pool::Work, cost: 1 }
             })
             .collect();
-        let workers =
-            std::thread::available_parallelism().map_or(1, |it| it.get()).div_ceil(4).max(4);
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |it| it.get())
+            .div_ceil(4)
+            .max(4)
+            .min(self.jobs as usize);
         let config = Config { io: 1, work: workers, keep_going: false };
         let mut machine = Machine::new(config)?;
         let slots = workers.min(tasks.len().max(1));

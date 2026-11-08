@@ -261,6 +261,7 @@ pub struct Flags {
     pub no_default_features: bool,
     pub profile: Option<String>,
     pub config: Vec<String>,
+    pub jobs: Option<String>,
     pub targets: Vec<String>,
     pub bin: Option<String>,
     pub example: Option<String>,
@@ -443,6 +444,15 @@ impl Invocation {
     /// Which build of the package the command is, as the daemon plans it. With no package
     /// named it is the one of the directory the worker is started in.
     pub fn selection(&self) -> Selection {
+        let mut config = self.flags.config.clone();
+        if let Some(jobs) = &self.flags.jobs {
+            let value = match jobs.parse::<i32>() {
+                Ok(jobs) => toml::Value::Integer(i64::from(jobs)),
+                Err(_) => toml::Value::String(jobs.clone()),
+            };
+            // Cargo's -j takes precedence over configuration, regardless of argument order.
+            config.push(format!("build.jobs={value}"));
+        }
         Selection {
             profile: self.flags.profile.clone().unwrap_or_else(|| "dev".to_owned()),
             features: self.flags.features.clone(),
@@ -454,7 +464,7 @@ impl Invocation {
             unstable: self.flags.unstable.clone(),
             target: self.target(),
             dev_deps: self.subcommand == Subcommand::Test || self.flags.dev_targets,
-            config: self.flags.config.clone(),
+            config,
             asked_in: None,
         }
     }
@@ -485,6 +495,7 @@ impl Flags {
             "-r" | "--release" => self.profile = Some("release".to_owned()),
             "--profile" => self.profile = owned(),
             "--config" => self.config.extend(owned()),
+            "-j" | "--jobs" => self.jobs = owned(),
             "--target" => self.targets.extend(owned()),
             "--bin" => self.bin = owned(),
             "--example" => self.example = owned(),
@@ -601,6 +612,15 @@ mod tests {
         assert_eq!(asked.flags.manifest_path.as_deref(), Some(Path::new("m/Cargo.toml")));
         assert_eq!(asked.flags.profile.as_deref(), Some("release"));
         assert_eq!(asked.program_args().count(), 0);
+    }
+
+    #[test]
+    fn jobs_override_config_in_either_argument_order() {
+        for typed in ["-j1 --config build.jobs=4", "--config build.jobs=4 --jobs=1"] {
+            assert_eq!(build("build", typed).selection().config, ["build.jobs=4", "build.jobs=1"]);
+        }
+        assert_eq!(build("build", "-j-2").selection().config, ["build.jobs=-2"]);
+        assert_eq!(build("build", "--jobs default").selection().config, ["build.jobs=\"default\""]);
     }
 
     #[test]

@@ -432,17 +432,12 @@ pub const RUNS: &str = "build script runs 5";
 #[cfg(unix)]
 const IN_VIEW: &str = "build script runs in their closure 1";
 
-/// The variables of a run that change nothing it prints or writes: the jobs it may start, and
-/// the directories the shell that ran cargo was in, which cargo leaves as they were (it runs
-/// the script in its package's directory). Whether it runs in a sandbox changes nothing it
-/// prints or writes either: a run that the sandbox refused something fails, and a failed run
-/// is not kept. Nor does where blaze keeps its store, its traces and its statistics, or
-/// whether it checks the store's runs.
-pub const UNREAD: [&str; 14] = [
+/// Execution controls and shell bookkeeping omitted from run keys. NUM_JOBS is kept:
+/// a script may emit its value. Sandbox refusals and failed runs are not cached.
+pub const UNREAD: [&str; 13] = [
     "CARGO_MAKEFLAGS",
     "MAKEFLAGS",
     "MFLAGS",
-    "NUM_JOBS",
     "PWD",
     "OLDPWD",
     "TMPDIR",
@@ -1176,6 +1171,20 @@ mod tests {
         assert_eq!(keyed::digest(&kind("home")), "d");
         assert_eq!(keyed::path_of(&kind("home")), at("home"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn jobs_count_changes_the_build_script_run_key() {
+        let root = std::env::temp_dir().join(format!("blaze-script-jobs-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let real = root.join("script");
+        std::fs::write(&real, "a script that emits NUM_JOBS").unwrap();
+        let key = |jobs: &str| {
+            let env = vec![("NUM_JOBS".to_owned(), jobs.to_owned())];
+            run_key(&real, &root, &[], &env, None).unwrap()
+        };
+        assert_ne!(key("1"), key("2"), "a script may emit its job count");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
