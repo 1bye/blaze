@@ -88,8 +88,12 @@ fn version() {
                     day.len() == 8
                         && day.bytes().all(|b| b.is_ascii_digit())
                         && !n.is_empty()
-                        && n.bytes().all(|b| b.is_ascii_digit())
-                        && (n == "0" || !n.starts_with('0'))
+                        && {
+                            let (n, rake) = n.split_once("-rake.").map_or((n, None), |(n, r)| (n, Some(r)));
+                            n.bytes().all(|b| b.is_ascii_digit())
+                                && (n == "0" || !n.starts_with('0'))
+                                && rake.is_none_or(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+                        }
                 },
             );
             assert!(dated, "BLAZE_RELEASE is {tag:?}, not a release's tag v0.YYYYMMDD.N");

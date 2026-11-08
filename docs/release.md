@@ -1,8 +1,10 @@
 ---
-status: current
+status: superseded
 summary: Releases: the canary and stable channels, how a release is cut and what gates promotion to stable.
 ---
-# Releases: canary and stable
+# Upstream releases: canary and stable
+
+This upstream record is superseded for the Rake fork by [RAKE_FORK.md](../RAKE_FORK.md). Only the Apple Silicon fork release workflows are active.
 
 blaze has two release channels, made of the same releases:
 

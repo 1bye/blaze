@@ -1,35 +1,25 @@
-# Cuts a release of main by hand while the train runs by hand only (train.yaml): the train's
-# release job alone, without waiting for a green train. `train_release.py '{"push": true}'` tags
-# main's HEAD `v0.YYYYMMDD.N` through the API and dispatches release.yaml on it; no commit goes
-# to main (the version is stamped into the release's build only, by `BLAZE_RELEASE`). Run it on
-# a main whose merge gate (`ci`) is green:
-#
-#     gh workflow run release-cut.yaml
-name: release cut
+name: Cut a Rake fork release
 on:
   workflow_dispatch:
-
-concurrency:
-  group: release-cut
-  cancel-in-progress: false
-
+    inputs:
+      version:
+        description: '0.YYYYMMDD.N-rake.N'
+        required: true
 permissions:
   contents: read
-
 jobs:
-  release:
-    name: release
-    if: github.ref == 'refs/heads/main'
+  cut:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
     permissions:
       contents: write
       actions: write
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - run: |
-          python3 -I .github/scripts/train_release.py '{"push": true}'
+      - name: Validate version, tag and dispatch the Apple Silicon build
         env:
+          VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$VERSION" =~ ^0\.[0-9]{8}\.[0-9]+-rake\.[0-9]+$ ]]
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA"
+          gh workflow run release.yaml --ref "v$VERSION" -f version="$VERSION"

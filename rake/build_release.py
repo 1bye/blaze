@@ -82,7 +82,7 @@ def main(b):
     for name_ in ["LICENSE-APACHE","LICENSE-MIT","README.md","CHANGELOG.md","RAKE_FORK.md","RAKE_PATCHES.md"]:shutil.copy2(ROOT/name_,stage/name_)
     run([stage/"blaze","--version"])
     run([server,"--version"],env=dict(os.environ,RUST_ANALYZER_INTERNALS_DO_NOT_USE="1"))
-    manifest={"version":b.version,"target":"aarch64-apple-darwin","base":"2007d7c8c849fd5a7858d5816e08764d9042c87c","commit":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),"toolchain":current,"rust_commit":pins["rust_commit"],"files":{str(p.relative_to(stage)):digest(p) for p in sorted(stage.rglob("*")) if p.is_file()}}
+    manifest={"version":b.version,"target":"aarch64-apple-darwin","base":(ROOT/"rake/upstream-base").read_text().strip(),"commit":subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip(),"toolchain":current,"rust_commit":pins["rust_commit"],"files":{str(p.relative_to(stage)):digest(p) for p in sorted(stage.rglob("*")) if p.is_file()}}
     (stage/"RAKE_BLAZE.json").write_text(json.dumps(manifest,sort_keys=True,indent=2)+"\n")
     archive=out/(name+".tar.gz")
     with archive.open("wb") as raw,gzip.GzipFile(filename="",mode="wb",fileobj=raw,mtime=0) as gz,tarfile.open(fileobj=gz,mode="w") as tar:
