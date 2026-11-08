@@ -85,6 +85,7 @@ cases![
     unwind_operand_order,
     assert_message,
     stack_aggregate_odd_size,
+    c_abi_projection,
     repeat_rows,
     if_branch_temporaries,
     uncaptured_scrutinee,

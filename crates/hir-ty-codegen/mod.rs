@@ -8994,6 +8994,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         offset: u64,
         leaves: &mut Vec<(u64, Scalar)>,
     ) -> Result<()> {
+        // Layout resolves projections; inspect that same concrete type for its fields.
+        let ty = self.normalize(ty);
         let layout = self.layout(ty)?;
         if layout.is_zst() {
             return Ok(());
@@ -9246,6 +9248,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         offset: u64,
         classes: &mut [Option<RegClass>; 2],
     ) -> Result<bool> {
+        let ty = self.normalize(ty);
         let layout = self.layout(ty)?;
         if layout.is_zst() {
             return Ok(true);
