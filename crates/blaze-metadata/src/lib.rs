@@ -343,6 +343,26 @@ pub struct Units<'a> {
 /// dev-dependencies exactly when the filter's targets do), made by blaze-units from blaze's
 /// own resolve: what `cargo <command> --unit-graph` prints.
 pub fn units(asked: &Asked<'_>, units: &Units<'_>) -> Result<blaze_units::UnitGraph> {
+    units_of(asked, units, None)
+}
+
+/// Builds a proc macro with its already selected features in the workspace's locked
+/// resolution. Selecting it directly keeps native-only ancestors from removing it when
+/// the auxiliary build uses a WebAssembly host.
+pub fn proc_macro_units(
+    asked: &Asked<'_>,
+    units: &Units<'_>,
+    package: &str,
+    features: &[String],
+) -> Result<blaze_units::UnitGraph> {
+    units_of(asked, units, Some((package, features)))
+}
+
+fn units_of(
+    asked: &Asked<'_>,
+    units: &Units<'_>,
+    proc_macro: Option<(&str, &[String])>,
+) -> Result<blaze_units::UnitGraph> {
     let build = asked.build.as_ref().context("a unit graph is of a build")?;
     let has_dev_units = units.filter.need_dev_deps(units.intent);
     anyhow::ensure!(
@@ -357,7 +377,22 @@ pub fn units(asked: &Asked<'_>, units: &Units<'_>) -> Result<blaze_units::UnitGr
         units.profile,
     )?;
     resolved(asked, None, |resolved| {
-        let FeatureRoots { specs, members: member_features } = resolved.one_feature_resolve()?;
+        let (roots, member_features) = if let Some((package, features)) = proc_macro {
+            let id = resolved
+                .resolve
+                .iter()
+                .find(|id| id.to_spec().to_string() == package)
+                .with_context(|| {
+                    format!("no proc macro `{package}` in the workspace's resolution")
+                })?;
+            let read = &resolved.packages[&id];
+            anyhow::ensure!(read.proc_macro_lib, "`{package}` is not a proc macro");
+            let features = CliFeatures::from_command_line(features, false, false)?;
+            (vec![id], vec![(&read.summary, features)])
+        } else {
+            let FeatureRoots { specs, members } = resolved.one_feature_resolve()?;
+            (resolved.selected_ids(&specs), members)
+        };
         let Resolved { ws, resolve, behavior, packages: reads, .. } = resolved;
         let profiles = blaze_manifest::profiles::Profiles::new(
             ws.profiles(),
@@ -378,7 +413,6 @@ pub fn units(asked: &Asked<'_>, units: &Units<'_>) -> Result<blaze_units::UnitGr
         let opts = FeatureOpts::new(behavior, dev, ForceAllTargets::No);
         let features =
             FeatureResolver::resolve(&packages, resolve, &member_features, &kinds, opts)?;
-        let roots = resolved.selected_ids(&specs);
         let mut by_id = FxHashMap::default();
         for id in resolve.iter() {
             let manifest = resolved

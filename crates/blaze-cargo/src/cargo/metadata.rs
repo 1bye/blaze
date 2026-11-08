@@ -377,6 +377,26 @@ pub fn units(
     manifest: Option<&Path>,
     asked: &crate::plan::Asked<'_>,
 ) -> anyhow::Result<blaze_units::UnitGraph> {
+    units_of(selection, cwd, manifest, asked, None)
+}
+
+pub fn proc_macro_units(
+    selection: &crate::plan::Selection,
+    cwd: &Path,
+    manifest: Option<&Path>,
+    asked: &crate::plan::Asked<'_>,
+    unit: &crate::plan::Unit,
+) -> anyhow::Result<blaze_units::UnitGraph> {
+    units_of(selection, cwd, manifest, asked, Some(unit))
+}
+
+fn units_of(
+    selection: &crate::plan::Selection,
+    cwd: &Path,
+    manifest: Option<&Path>,
+    asked: &crate::plan::Asked<'_>,
+    proc_macro: Option<&crate::plan::Unit>,
+) -> anyhow::Result<blaze_units::UnitGraph> {
     if let Some(flag) = selection.unstable.first() {
         anyhow::bail!("blaze's unit graph is not made for cargo's unstable flag `-Z {flag}`");
     }
@@ -445,7 +465,13 @@ pub fn units(
         host: &host,
         target: target.as_ref(),
     };
-    blaze_metadata::units(&asked, &units).context("making the build's unit graph")
+    match proc_macro {
+        Some(unit) => {
+            blaze_metadata::proc_macro_units(&asked, &units, &unit.pkg_id, &unit.features)
+        }
+        None => blaze_metadata::units(&asked, &units),
+    }
+    .context("making the build's unit graph")
 }
 
 /// The targets the flags `targets` pick (`--lib`, `--tests`, `--bin NAME`, ...), as cargo's

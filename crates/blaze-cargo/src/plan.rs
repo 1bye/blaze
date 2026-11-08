@@ -671,6 +671,23 @@ impl UnitGraph {
         serde_json::from_value(json).context("blaze's unit graph is not cargo's form")
     }
 
+    /// The auxiliary graph rooted at a selected proc macro, with its original features
+    /// and workspace resolution, for the host named by `asked`.
+    pub fn proc_macro(
+        manifest: &Path,
+        selection: &Selection,
+        asked: &Asked<'_>,
+        unit: &Unit,
+    ) -> anyhow::Result<std::sync::Arc<UnitGraph>> {
+        let (dir, manifest) = asked_where(manifest, selection);
+        let graph =
+            crate::cargo::metadata::proc_macro_units(selection, dir, manifest, asked, unit)?;
+        let json = serde_json::to_value(&graph).context("writing blaze's proc macro unit graph")?;
+        let graph =
+            serde_json::from_value(json).context("blaze's unit graph is not cargo's form")?;
+        Ok(std::sync::Arc::new(graph))
+    }
+
     /// The units that end up in the program: those the roots reach without going through one
     /// that runs on the host.
     pub fn for_target(&self) -> FxHashSet<usize> {

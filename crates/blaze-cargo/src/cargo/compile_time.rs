@@ -156,7 +156,7 @@ struct Driver<'a> {
     /// host, made only when it links dependencies of that platform alone.
     ///
     /// [`own_macro::WASM_TARGET`]: super::own_macro::WASM_TARGET
-    wasm_graph: OnceLock<Result<Arc<UnitGraph>, String>>,
+    wasm_graph: Mutex<FxHashMap<usize, Result<Arc<UnitGraph>, String>>>,
     /// Whether the package of each unit has dependencies [`own_macro::WASM_TARGET`] has and
     /// the host has not.
     ///
@@ -307,7 +307,7 @@ impl<'a> Driver<'a> {
             manifest: manifest.to_owned(),
             selection: selection.clone(),
             extra_env: config.extra_env.clone(),
-            wasm_graph: OnceLock::new(),
+            wasm_graph: Mutex::new(FxHashMap::default()),
             wasm_only: Mutex::new(FxHashMap::default()),
             wasm_platform: OnceLock::new(),
             links_proc_macro: Mutex::new(FxHashMap::default()),
@@ -649,7 +649,7 @@ impl<'a> Driver<'a> {
         if !wanted {
             return Ok(());
         }
-        let wasm = self.wasm_graph()?;
+        let wasm = self.wasm_graph(at)?;
         let unit = self.unit(at);
         let same = |host: &Unit, wasm: &Unit| {
             host.pkg_id == wasm.pkg_id
@@ -792,19 +792,21 @@ impl<'a> Driver<'a> {
         Ok(found)
     }
 
-    /// The unit graph of the load's build with [`own_macro::WASM_TARGET`] as its host, the
-    /// platform its proc macros and what they link are built for.
+    /// The selected proc macro's graph with [`own_macro::WASM_TARGET`] as its host.
+    /// Its native-only ancestors are not roots of this auxiliary build.
     ///
     /// [`own_macro::WASM_TARGET`]: super::own_macro::WASM_TARGET
-    fn wasm_graph(&self) -> anyhow::Result<Arc<UnitGraph>> {
-        let made = self.wasm_graph.get_or_init(|| {
+    fn wasm_graph(&self, at: usize) -> anyhow::Result<Arc<UnitGraph>> {
+        let mut graphs = lock(&self.wasm_graph);
+        let made = graphs.entry(at).or_insert_with(|| {
             let target = super::own_macro::WASM_TARGET;
             let printed =
                 said(&["--print", "cfg", "--target", target]).map_err(|it| format!("{it:#}"))?;
             let cfg = atoms(&printed);
             let selection = Selection { target: None, ..self.selection.clone() };
             let asked = crate::plan::Asked { triple: target, cfg: &cfg, env: &self.extra_env };
-            UnitGraph::asked(&self.manifest, &selection, &asked).map_err(|it| format!("{it:#}"))
+            UnitGraph::proc_macro(&self.manifest, &selection, &asked, self.unit(at))
+                .map_err(|it| format!("{it:#}"))
         });
         made.clone().map_err(|why| {
             anyhow::anyhow!("making the build's unit graph for wasm32-wasip1: {why}")
