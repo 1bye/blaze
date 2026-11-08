@@ -4842,7 +4842,7 @@ fn std_unit_at(
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     };
-    field(b"blaze standard library 5");
+    field(b"blaze standard library 6");
     field(format!("{:?} {debug:?}", args.selection.target).as_bytes());
     // A file of one of its crates whose text is blaze's, not the toolchain's.
     if args.run_tool {
@@ -5320,6 +5320,7 @@ fn build(
         start: main.filter(|it| own(it).is_some() || in_harness(db, *it)),
         shared: args.shared,
         whole: local.iter().all(|&krate| resolver.own_crate_id(krate.into()).is_some()),
+        standard_library: args.library,
         kept: &kept,
         offered: &offered,
     };
@@ -5485,6 +5486,7 @@ fn build(
                     start: None,
                     shared: false,
                     whole: false,
+                    standard_library: false,
                     kept: &[],
                     offered: &[],
                 };

@@ -400,6 +400,7 @@ impl Compiler {
                 start: None,
                 shared: false,
                 whole: false,
+                standard_library: false,
                 kept: &[],
                 offered: &[],
             };

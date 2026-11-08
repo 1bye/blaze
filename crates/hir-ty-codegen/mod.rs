@@ -748,6 +748,8 @@ pub struct Roots<'a> {
     /// Whether rustc built nothing of any crate of the program but the standard library's,
     /// whatever its `main` is: bun's is C's, and every one of its functions is an entry.
     pub whole: bool,
+    /// This object contains the separately compiled standard library.
+    pub standard_library: bool,
     /// The statics a linker or a runtime finds though no code names them, in the crates
     /// rustc built nothing of: `#[used]` ones, and those put in a section by name.
     pub kept: &'a [StaticId],
@@ -982,6 +984,7 @@ impl CodegenUnit {
                 _ => entries = cg.entries.clone(),
             }
             cg.patching = patching;
+            cg.standard_library = roots.standard_library;
             cg.rustc_futures = futures.clone();
             cg.rustc_values = frozen.rustc_values();
             let mut compiled = Vec::new();
@@ -2238,6 +2241,7 @@ struct ObjectCodegen<'a, 'db> {
     rustc_futures: FxHashSet<salsa::Id>,
     /// Whether instances and statics get names another object can refer to.
     patching: bool,
+    standard_library: bool,
     /// The object this one is a patch for, and what of it is no longer what the source says.
     base: Option<&'a patch::Base>,
     replaced: patch::Unchanged,
@@ -5326,6 +5330,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             forwarded: FxHashSet::default(),
             rustc_futures: FxHashSet::default(),
             patching: false,
+            standard_library: false,
             base,
             replaced: Default::default(),
             own_static_order: Vec::new(),
@@ -6576,7 +6581,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         if body.is_some_and(|it| it != entry.code.signature()) {
             return Ok(self.kept.unfound("an entry of another signature"));
         }
-        let symbol = format!("blaze::{}::n{}", entry.label, self.found.len());
+        let prefix = if self.standard_library { "blaze.std" } else { "blaze" };
+        let symbol = format!("{prefix}::{}::n{}", entry.label, self.found.len());
         let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
         let id = self
             .module
@@ -7435,7 +7441,13 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         }
         // A patch is linked with its base, whose names these must not take.
         let env = &self.homes.home(self.db, instance, env);
-        let prefix = if self.base.is_some() { "blaze.patch" } else { "blaze" };
+        let prefix = if self.standard_library {
+            "blaze.std"
+        } else if self.base.is_some() {
+            "blaze.patch"
+        } else {
+            "blaze"
+        };
         let symbol = format!("{prefix}::{name}::{}", self.instances.len());
         let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
         let id = self
