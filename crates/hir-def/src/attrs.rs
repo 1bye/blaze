@@ -562,7 +562,24 @@ fn symbol_attr(db: &dyn SourceDatabase, owner: AttrDefId, name: &str) -> Option<
     })?;
     let resolver = resolver_for_attr_def_id(db, owner);
     let value = docs::expand_attr_value(db, krate, resolver, source.with_value(value))?;
-    Some(Symbol::intern(&value))
+    if !value.contains(hir_expand::builtin::MODULE_PATH_PLACEHOLDER) {
+        return Some(Symbol::intern(&value));
+    }
+    let mut module = owner.module(db);
+    let mut segments = Vec::new();
+    while let Some(parent) = module.containing_module(db) {
+        if !module.is_block_module(db) {
+            segments.push(module.name(db)?.symbol().as_str().to_owned());
+        }
+        // SAFETY: the module belongs to this database.
+        module = unsafe { parent.to_static() };
+    }
+    let krate = krate.extra_data(db).display_name.as_ref()?;
+    segments.push(krate.crate_name().symbol().as_str().to_owned());
+    segments.reverse();
+    Some(Symbol::intern(
+        &value.replace(hir_expand::builtin::MODULE_PATH_PLACEHOLDER, &segments.join("::")),
+    ))
 }
 
 fn collect_field_attrs<T>(
