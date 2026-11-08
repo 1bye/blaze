@@ -1057,7 +1057,11 @@ pub fn prepare(path: &Path, store: Option<&blaze_store::Store>) -> Result<(), St
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let known = Known { digest: keyed::sha256(&bytes), identity: None };
     let wasm = Wasm::known(path, known, Some(&bytes), store)?;
-    list(path, &wasm, &wasm.list()?);
+    let text = match carried_list(&bytes) {
+        Some(text) => text.to_owned(),
+        None => wasm.list()?,
+    };
+    list(path, &wasm, &text);
     Ok(())
 }
 
@@ -1881,6 +1885,26 @@ mod tests {
         assert_eq!(carried_list(&module).as_deref(), Some("0\tSerialize\tserde\n"));
         module.truncate(module.len() - 1);
         assert_eq!(carried_list(&module), None, "a section that runs past the end");
+    }
+
+    #[test]
+    fn synchronous_preparation_compiles_without_instantiating_a_carried_list() {
+        let dir = scratch("synchronous-prepared");
+        let path = dir.join("m.wasm");
+        let text = "0\tReady\t\n";
+        let name = exports::LIST_SECTION.as_bytes();
+        let mut module = b"\0asm\x01\0\0\0".to_vec();
+        module.extend_from_slice(&[0, (1 + name.len() + text.len()) as u8, name.len() as u8]);
+        module.extend_from_slice(name);
+        module.extend_from_slice(text.as_bytes());
+        std::fs::write(&path, &module).unwrap();
+        // No exports: executing a dynamic listing would fail.
+        prepare(&path, None).unwrap();
+        let (known, listed) = listing(&path).unwrap();
+        assert_eq!(listed, text);
+        assert_eq!(known.digest, keyed::sha256(&module));
+        assert!(code_file(&path, &code_key(&known.digest)).is_file());
+        _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1092,10 +1092,10 @@ impl<'a> Driver<'a> {
             dep_info: deps.join(format!("{stem}.d")),
         };
         let mut compiled = self.compile(&crates, &made, &deps.join(&stem));
-        // Compiled for this host from here, beside the other units, rather than in the load,
-        // which loads one module after another.
+        // Host compilation belongs to this task too, so the job pool bounds its memory.
+        // A background compile would outlive its slot and accumulate beside later tasks.
         if wasm && compiled.is_ok() {
-            compiled = blaze_macro_wasm::prepare_soon(&made.exe, own_script::store())
+            compiled = blaze_macro_wasm::prepare(&made.exe, own_script::store())
                 .map_err(anyhow::Error::msg);
         }
         if let (true, Err(why)) = (wasm, &compiled) {
