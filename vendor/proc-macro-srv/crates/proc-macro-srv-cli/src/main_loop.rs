@@ -358,7 +358,9 @@ impl proc_macro_srv::ProcMacroClientInterface for ProcMacroClientHandle<'_> {
         first: proc_macro_srv::span::Span,
         second: proc_macro_srv::span::Span,
     ) -> Option<proc_macro_srv::span::Span> {
-        assert_eq!(first.anchor.file_id, second.anchor.file_id);
+        if first.anchor.file_id != second.anchor.file_id {
+            return None;
+        }
         let response = self.roundtrip(bidirectional::SubRequest::SpanJoin {
             file_id: first.anchor.file_id.as_u32(),
             ast_id_first: first.anchor.ast_id.into_raw(),
