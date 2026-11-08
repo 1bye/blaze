@@ -184,6 +184,9 @@ impl Sysroot {
     }
 
     pub fn discover_proc_macro_srv(&self) -> Option<anyhow::Result<AbsPathBuf>> {
+        if let Some(path) = std::env::var_os("BLAZE_TOOLCHAIN_PROC_MACRO_SERVER") {
+            return Some(explicit_proc_macro_server(std::path::Path::new(&path)));
+        }
         let root = self.root()?;
         Some(
             ["libexec", "lib"]
@@ -620,4 +623,27 @@ test";
     pub(super) const PROC_MACRO_DEPS: &str = "
 std
 core";
+}
+
+/// Resolve the explicit server before constructing an absolute-path wrapper.
+fn explicit_proc_macro_server(path: &std::path::Path) -> anyhow::Result<AbsPathBuf> {
+    let path = std::fs::canonicalize(path)
+        .map_err(|e| anyhow::format_err!("cannot resolve the pinned macro server: {e}"))?;
+    let path = paths::Utf8PathBuf::from_path_buf(path)
+        .map_err(|_| anyhow::format_err!("macro server path is not UTF-8"))?;
+    probe_for_binary(path)
+        .map(AbsPathBuf::assert)
+        .ok_or_else(|| anyhow::format_err!("the pinned macro server is not a regular file"))
+}
+
+#[cfg(test)]
+mod rake_server_tests {
+    use super::*;
+    #[test]
+    fn explicit_server_paths_are_resolved_or_rejected_without_panicking() {
+        let path = explicit_proc_macro_server(std::path::Path::new("Cargo.toml")).unwrap();
+        assert!(std::path::PathBuf::from(path).is_absolute());
+        assert!(explicit_proc_macro_server(std::path::Path::new("missing-rake-server")).is_err());
+        assert!(explicit_proc_macro_server(std::path::Path::new(".")).is_err());
+    }
 }

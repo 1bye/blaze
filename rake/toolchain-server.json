@@ -1,0 +1,5 @@
+{
+  "toolchain": "nightly-2026-10-27",
+  "rust_commit": "16d1ffac17ad8b739e32483ac2e65fe7e1804977",
+  "source_sha256": "62cdc6d0213a0856200e2431968d15a2cabb4c4eb0625c6b779ff4822bebb3d5"
+}

@@ -1,0 +1,11 @@
+--- a/crates/proc-macro-srv-cli/src/main_loop.rs
++++ b/crates/proc-macro-srv-cli/src/main_loop.rs
+@@ -358,7 +358,9 @@
+         first: proc_macro_srv::span::Span,
+         second: proc_macro_srv::span::Span,
+     ) -> Option<proc_macro_srv::span::Span> {
+-        assert_eq!(first.anchor.file_id, second.anchor.file_id);
++        if first.anchor.file_id != second.anchor.file_id {
++            return None;
++        }
+         let response = self.roundtrip(bidirectional::SubRequest::SpanJoin {
