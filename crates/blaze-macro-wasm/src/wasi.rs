@@ -7,7 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use wasmtime::{Caller, Extern, FuncType, Linker, Memory, Module, Val, ValType};
@@ -17,6 +17,9 @@ use crate::{State, keyed};
 /// Where the module sees its package: what `CARGO_MANIFEST_DIR` says to it. Not where the
 /// package is, so that what it makes of a path is the same on every machine.
 pub(crate) const PACKAGE: &str = "/blaze/package";
+
+/// A synthetic preopen for libc's readlink probe of the package's parent.
+const PACKAGE_PARENT: &str = "/blaze";
 
 /// Where the module is told `OUT_DIR` is: nothing is there for it.
 pub(crate) const OUT_DIR: &str = "/blaze/out";
@@ -48,6 +51,7 @@ const KEPT_OUTPUT: usize = 64 << 10;
 
 enum Open {
     Stdio,
+    PackageParent,
     Dir { rel: String },
     File { bytes: Vec<u8>, at: u64 },
 }
@@ -69,6 +73,7 @@ impl Files {
         let mut fds = vec![Some(Open::Stdio), Some(Open::Stdio), Some(Open::Stdio)];
         if root.is_some() {
             fds.push(Some(Open::Dir { rel: String::new() }));
+            fds.push(Some(Open::PackageParent));
         }
         Files {
             root: root.map(Path::to_path_buf).unwrap_or_default(),
@@ -94,6 +99,35 @@ impl Files {
 
     fn get(&mut self, fd: i32) -> Option<&mut Open> {
         self.fds.get_mut(usize::try_from(fd).ok()?)?.as_mut()
+    }
+
+    fn preopen(&mut self, fd: i32) -> Option<&'static str> {
+        match (fd, self.get(fd)) {
+            (3, Some(Open::Dir { .. })) => Some(PACKAGE),
+            (_, Some(Open::PackageParent)) => Some(PACKAGE_PARENT),
+            _ => None,
+        }
+    }
+
+    fn readlink(&mut self, fd: i32, path: &str) -> Result<String, i32> {
+        if path.is_empty() {
+            return Err(ENOENT);
+        }
+        if path.starts_with('/') {
+            return Err(ENOTCAPABLE);
+        }
+        if matches!(self.get(fd), Some(Open::PackageParent)) {
+            // The prefix has no host directory behind it.
+            return Err(match path {
+                "." | "./" => EINVAL,
+                _ => ENOENT,
+            });
+        }
+        let dir = self.dir(fd)?;
+        let rel = if dir.is_empty() { path.to_owned() } else { format!("{dir}/{path}") };
+        let result = link_at(&self.root, &rel);
+        self.record(keyed::link(&rel), keyed::link_value(&result));
+        result
     }
 
     fn dir(&mut self, fd: i32) -> Result<String, i32> {
@@ -144,6 +178,45 @@ impl Files {
         self.random ^= self.random >> 7;
         self.random ^= self.random << 17;
         self.random
+    }
+}
+
+/// The readlink result for a package-relative path, shared with read-set validation.
+pub(crate) fn link_at(root: &Path, relative: &str) -> Result<String, i32> {
+    let relative = Path::new(relative);
+    let mut depth = 0usize;
+    for part in relative.components() {
+        match part {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => depth = depth.checked_sub(1).ok_or(ENOTCAPABLE)?,
+            Component::RootDir | Component::Prefix(_) => return Err(ENOTCAPABLE),
+        }
+    }
+
+    let root = root.canonicalize().map_err(link_errno)?;
+    // Keep the spelling of the path: e.g. `file/..` must still reject a non-directory.
+    let path = root.join(relative);
+    let canonical = path.canonicalize().map_err(link_errno)?;
+    let target = canonical.strip_prefix(&root).map_err(|_| ENOTCAPABLE)?;
+    if !path.symlink_metadata().map_err(link_errno)?.file_type().is_symlink() {
+        return Err(EINVAL);
+    }
+
+    // Only give the guest a target in its virtual namespace.
+    let mut guest = PACKAGE.to_owned();
+    for component in target {
+        guest.push('/');
+        guest.push_str(component.to_str().ok_or(ENOTCAPABLE)?);
+    }
+    Ok(guest)
+}
+
+fn link_errno(error: std::io::Error) -> i32 {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => ENOENT,
+        std::io::ErrorKind::NotADirectory => ENOTDIR,
+        _ => ENOTCAPABLE,
     }
 }
 
@@ -356,7 +429,7 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
         let (bytes, pos) = match state.files.get(fd) {
             Some(Open::File { bytes, at: pos }) => (bytes, pos),
             Some(Open::Stdio) => return Ok(0),
-            Some(Open::Dir { .. }) => return Err(EISDIR),
+            Some(Open::Dir { .. } | Open::PackageParent) => return Err(EISDIR),
             None => return Err(EBADF),
         };
         let mut from = at.unwrap_or(*pos) as usize;
@@ -402,8 +475,8 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
     )?;
     linker.func_wrap(MODULE, "fd_close", |mut caller: Caller<'_, State>, fd: i32| {
         let files = &mut caller.data_mut().files;
-        // The package's directory stays: closing it would leave the module nothing to open.
-        if fd <= 3 || files.get(fd).is_none() {
+        // Preopens stay available for libc path lookup.
+        if fd <= 2 || files.preopen(fd).is_some() || files.get(fd).is_none() {
             return if files.get(fd).is_some() { SUCCESS } else { EBADF };
         }
         files.fds[fd as usize] = None;
@@ -444,7 +517,7 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
             let (mem, state) = memory.data_and_store_mut(&mut caller);
             let filetype = match state.files.get(fd) {
                 Some(Open::Stdio) => FILETYPE_CHARACTER_DEVICE,
-                Some(Open::Dir { .. }) => FILETYPE_DIRECTORY,
+                Some(Open::Dir { .. } | Open::PackageParent) => FILETYPE_DIRECTORY,
                 Some(Open::File { .. }) => FILETYPE_REGULAR_FILE,
                 None => return Ok(EBADF),
             };
@@ -468,6 +541,7 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
                     filestat(1, FILETYPE_REGULAR_FILE, bytes.len() as u64)
                 }
                 Some(Open::Dir { rel }) => filestat(ino(rel), FILETYPE_DIRECTORY, 0),
+                Some(Open::PackageParent) => filestat(ino(PACKAGE_PARENT), FILETYPE_DIRECTORY, 0),
                 None => return Ok(EBADF),
             };
             Ok(errno(put(mem, out, &stat)))
@@ -479,11 +553,9 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
         |mut caller: Caller<'_, State>, fd: i32, out: i32| {
             let memory = memory(&mut caller)?;
             let (mem, state) = memory.data_and_store_mut(&mut caller);
-            if fd != 3 || state.files.fds.len() < 4 {
-                return Ok(EBADF);
-            }
+            let Some(name) = state.files.preopen(fd) else { return Ok(EBADF) };
             let mut prestat = [0u8; 8];
-            prestat[4..].copy_from_slice(&(PACKAGE.len() as u32).to_le_bytes());
+            prestat[4..].copy_from_slice(&(name.len() as u32).to_le_bytes());
             Ok(errno(put(mem, out, &prestat)))
         },
     )?;
@@ -493,10 +565,8 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
         |mut caller: Caller<'_, State>, fd: i32, ptr: i32, len: i32| {
             let memory = memory(&mut caller)?;
             let (mem, state) = memory.data_and_store_mut(&mut caller);
-            if fd != 3 || state.files.fds.len() < 4 {
-                return Ok(EBADF);
-            }
-            let name = &PACKAGE.as_bytes()[..PACKAGE.len().min(len as u32 as usize)];
+            let Some(name) = state.files.preopen(fd) else { return Ok(EBADF) };
+            let name = &name.as_bytes()[..name.len().min(len as u32 as usize)];
             Ok(errno(put(mem, ptr, name)))
         },
     )?;
@@ -567,7 +637,24 @@ pub(crate) fn add(linker: &mut Linker<State>) -> wasmtime::Result<()> {
     linker.func_wrap(
         MODULE,
         "path_readlink",
-        |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32| EINVAL,
+        |mut caller: Caller<'_, State>,
+         fd: i32,
+         ptr: i32,
+         len: i32,
+         buf: i32,
+         size: i32,
+         used: i32| {
+            let memory = memory(&mut caller)?;
+            let (mem, state) = memory.data_and_store_mut(&mut caller);
+            let read = (|| {
+                let path = text(mem, ptr, len)?;
+                let target = state.files.readlink(fd, &path)?;
+                let target = &target.as_bytes()[..target.len().min(size as u32 as usize)];
+                put(mem, buf, target)?;
+                put(mem, used, &(target.len() as u32).to_le_bytes())
+            })();
+            Ok(errno(read))
+        },
     )?;
     linker.func_wrap(
         MODULE,
@@ -637,4 +724,21 @@ pub(crate) fn rest(linker: &mut Linker<State>, module: &Module) -> wasmtime::Res
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod rake_realpath_tests {
+    use super::*;
+    #[test]
+    fn prefix_and_existence_probes_stay_confined_and_recorded() {
+        let root = std::env::temp_dir().join(format!("rake-realpath-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("xml")).unwrap();
+        let mut files = Files::new(Some(&root));
+        assert_eq!(files.readlink(4, "."), Err(EINVAL));
+        assert_eq!(files.readlink(3, "xml"), Err(EINVAL));
+        assert_eq!(files.readlink(3, "missing"), Err(ENOENT));
+        assert_eq!(files.readlink(3, "../outside"), Err(ENOTCAPABLE));
+        assert!(files.reads.contains_key(&keyed::link("missing")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -86,7 +86,7 @@ const HOST: &str = "blaze_proc_macro";
 
 /// What the first key of an expansion starts with: another when the key or the value is made
 /// otherwise.
-const DOMAIN: &str = "blaze wasm proc-macro expansion 2";
+const DOMAIN: &str = "blaze wasm proc-macro expansion 3";
 
 /// The most memory one instance may have.
 const MEMORY: usize = 4 << 30;
@@ -1403,7 +1403,7 @@ fn expand<'a>(
         Some((value, span)) => {
             value.said(db.map(|db| load_cargo::answer(db, value.request(span))).as_ref())
         }
-        None if read.starts_with('\0') => "?".to_owned(),
+        None if read.starts_with('\0') && !read.starts_with(keyed::LINK) => "?".to_owned(),
         None => root.as_deref().map_or("-".to_owned(), |it| keyed::now(it, read)),
     };
     if let Some(store) = store
@@ -2028,6 +2028,7 @@ mod tests {
         let reads = vec![
             ("schema.json".to_owned(), keyed::digest_of(&package.join("schema.json"))),
             (keyed::kind("missing"), "-".to_owned()),
+            (keyed::link("absent.xml"), keyed::now(&package, &keyed::link("absent.xml"))),
         ];
         {
             let store = open();
@@ -2042,6 +2043,9 @@ mod tests {
         std::fs::create_dir_all(package.join("missing")).unwrap();
         assert!(keyed::find(&open(), &first, &now).is_none(), "what it found missing is there");
         std::fs::remove_dir_all(package.join("missing")).unwrap();
+        std::fs::write(package.join("absent.xml"), "new").unwrap();
+        assert!(keyed::find(&open(), &first, &now).is_none(), "a missing readlink path appeared");
+        std::fs::remove_file(package.join("absent.xml")).unwrap();
         // The same package elsewhere, as on another machine, finds it.
         let moved = dir.join("moved");
         std::fs::rename(&package, &moved).unwrap();

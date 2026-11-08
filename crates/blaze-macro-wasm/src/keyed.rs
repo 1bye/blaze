@@ -16,6 +16,9 @@ const SLOTS: u32 = 16;
 /// What stands before a path in a read set when only the [`kind`] of file at it counts.
 const KIND: &str = "?";
 
+/// A path probe through readlink, in the reserved non-path namespace.
+pub(crate) const LINK: &str = "\0readlink:";
+
 /// A key of fields, each its length and its bytes.
 pub(crate) struct Key(Sha256);
 
@@ -89,8 +92,22 @@ pub(crate) fn kind(path: &str) -> String {
     format!("{KIND}{path}")
 }
 
+pub(crate) fn link(path: &str) -> String {
+    format!("{LINK}{path}")
+}
+
+pub(crate) fn link_value(result: &Result<String, i32>) -> String {
+    match result {
+        Ok(target) => target.clone(),
+        Err(errno) => errno.to_string(),
+    }
+}
+
 /// What the read `read` of the package at `root` finds now.
 pub(crate) fn now(root: &Path, read: &str) -> String {
+    if let Some(path) = read.strip_prefix(LINK) {
+        return link_value(&crate::wasi::link_at(root, path));
+    }
     let (only_kind, rel) = match read.strip_prefix(KIND) {
         Some(rel) => (true, rel),
         None => (false, read),
