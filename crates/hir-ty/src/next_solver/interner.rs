@@ -2067,7 +2067,15 @@ impl<'db> Interner for DbInterner<'db> {
         crate::opaques::opaque_types_defined_by(db, def_id, &mut result);
 
         // Collect coroutines.
-        let (store, root_expr) = def_id.store_and_root_expr(db);
+        // This walk collects coroutine definitions, not literal values. Keep it
+        // on inference's structural input so text edits do not invalidate typeck.
+        let (store, root_expr) = match def_id {
+            InferBodyId::DefWithBodyId(def) => {
+                let body = hir_def::expr_store::Body::for_inference(db, def);
+                (&body.store, body.root_expr())
+            }
+            InferBodyId::AnonConstId(_) => def_id.store_and_root_expr(db),
+        };
         // We can't just visit all exprs, since this may end up in unrelated anon consts.
         CoroutinesVisitor { db: self.db, owner: def_id, store, coroutines: &mut result }
             .on_expr(root_expr);

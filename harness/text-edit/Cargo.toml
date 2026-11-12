@@ -1,0 +1,10 @@
+[package]
+name = "text-edit-probe"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["macros"]
+
+[dependencies]
+text-edit-macros = { path = "macros" }

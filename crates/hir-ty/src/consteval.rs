@@ -351,6 +351,7 @@ pub(crate) fn create_anon_const<'a, 'db>(
     forbid_params_after: Option<u32>,
     allow_anon_const_using_generic_params: bool,
 ) -> Result<Const<'db>, CreateConstError<'db>> {
+    let mut literal_id = expr_id;
     let mut expr = &store[expr_id];
     if let Expr::Block { statements, tail: Some(tail), .. } = expr
         && statements.is_empty()
@@ -358,7 +359,15 @@ pub(crate) fn create_anon_const<'a, 'db>(
         // rustc unwraps *one* layer of blocks, so we do too (this impacts whether the const can use generic parameters.
         // Anon consts sometimes cannot while bare paths can). mGCA allows arbitrarily many blocks, but we don't implement
         // it yet.
+        literal_id = *tail;
         expr = &store[*tail];
+    }
+    // Inference uses a value-free string projection. A const argument needs the
+    // real value, and must record a dependency on it even when inference is reused.
+    if matches!(expr, Expr::Literal(Literal::String(_)))
+        && let ExpressionStoreOwnerId::Body(def) = owner
+    {
+        expr = &Body::of(interner.db, def).store[literal_id];
     }
     match expr {
         Expr::Literal(literal)

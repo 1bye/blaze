@@ -38,7 +38,7 @@ impl<Id: Copy> Param<Id> {
 }
 
 /// The body of an item (function, const etc.).
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Body {
     pub store: ExpressionStore,
     /// The patterns for the function's parameters. While the parameter types are
@@ -176,6 +176,31 @@ impl Body {
             maps,
         );
         Some((Arc::new(body), source_map))
+    }
+
+    /// The body used for type inference, without UTF-8 string contents.
+    ///
+    /// A string literal always has type `&'static str`. Keeping its value out of
+    /// this projection lets inference stop validating when only text changes.
+    /// Const evaluation, MIR and source maps must continue using the real body.
+    #[salsa::tracked(returns(deref))]
+    pub fn for_inference(db: &dyn SourceDatabase, def: DefWithBodyId) -> Arc<Body> {
+        let mut body = match Self::relative(db, def) {
+            Some((body, _)) => body.clone(),
+            None => Self::with_source_map(db, def).0.clone(),
+        };
+        if body.exprs().any(|(_, expr)| {
+            matches!(expr, crate::hir::Expr::Literal(crate::hir::Literal::String(_)))
+        }) {
+            if let Some(store) = &mut Arc::make_mut(&mut body).store.expr_only {
+                for (_, expr) in store.exprs.iter_mut() {
+                    if let crate::hir::Expr::Literal(crate::hir::Literal::String(text)) = expr {
+                        *text = intern::Symbol::empty();
+                    }
+                }
+            }
+        }
+        body
     }
 
     #[salsa::tracked(returns(deref))]

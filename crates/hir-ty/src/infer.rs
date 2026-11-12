@@ -130,7 +130,7 @@ pub fn infer_query_with_inspect<'db>(
 ) -> InferenceResult<'db> {
     let _p = tracing::info_span!("infer_query").entered();
     let resolver = def.resolver(db);
-    let body = Body::of(db, def);
+    let body = Body::for_inference(db, def);
     let mut ctx = InferenceContext::new(
         db,
         InferBodyId::DefWithBodyId(def),

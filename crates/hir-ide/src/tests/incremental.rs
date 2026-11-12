@@ -42,7 +42,7 @@ fn foo() -> i32 {
                 "FunctionSignature::of_",
                 "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
-                "Body::of_",
+                "Body::for_inference_",
                 "Body::relative_",
                 "body_syntax",
                 "trait_environment_query",
@@ -54,6 +54,7 @@ fn foo() -> i32 {
                 "ModuleScope < 'db >::name_",
                 "ModuleScope < 'db >::traits_",
                 "ExprScopes::body_expr_scopes_",
+                "Body::of_",
                 "body_upvars_mentioned",
             ]
         "#]],
@@ -91,6 +92,7 @@ fn foo() -> i32 {
                 "FunctionSignature::of_",
                 "body_syntax",
                 "Body::relative_",
+                "Body::for_inference_",
                 "Body::of_",
             ]
         "#]],
@@ -137,7 +139,7 @@ fn baz() -> i32 {
                 "FunctionSignature::of_",
                 "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
-                "Body::of_",
+                "Body::for_inference_",
                 "Body::relative_",
                 "body_syntax",
                 "trait_environment_query",
@@ -149,12 +151,13 @@ fn baz() -> i32 {
                 "ModuleScope < 'db >::name_",
                 "ModuleScope < 'db >::traits_",
                 "ExprScopes::body_expr_scopes_",
+                "Body::of_",
                 "body_upvars_mentioned",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
                 "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
-                "Body::of_",
+                "Body::for_inference_",
                 "Body::relative_",
                 "body_syntax",
                 "trait_environment_query",
@@ -163,18 +166,20 @@ fn baz() -> i32 {
                 "ModuleScope < 'db >::legacy_macro_",
                 "ModuleScope < 'db >::name_",
                 "ExprScopes::body_expr_scopes_",
+                "Body::of_",
                 "body_upvars_mentioned",
                 "InferenceResult < 'db >::for_body_",
                 "FunctionSignature::of_",
                 "FunctionSignature::with_source_map_",
                 "AttrFlags::query_",
-                "Body::of_",
+                "Body::for_inference_",
                 "Body::relative_",
                 "body_syntax",
                 "trait_environment_query",
                 "GenericPredicates::query_with_diagnostics_",
                 "fn_sig_for_fn",
                 "ExprScopes::body_expr_scopes_",
+                "Body::of_",
                 "body_upvars_mentioned",
             ]
         "#]],
@@ -222,8 +227,9 @@ fn baz() -> i32 {
                 "FunctionSignature::of_",
                 "body_syntax",
                 "Body::relative_",
-                "Body::of_",
+                "Body::for_inference_",
                 "InferenceResult < 'db >::for_body_",
+                "Body::of_",
                 "ExprScopes::body_expr_scopes_",
                 "body_upvars_mentioned",
                 "AttrFlags::query_",
@@ -763,4 +769,97 @@ fn execute_assert_events(
             );
         }
     });
+}
+
+#[test]
+fn string_text_macro_edit_keeps_inference() {
+    let source = r#"macro_rules! screen { ($text:literal) => { $text }; }
+fn render() -> &'static str { screen!("first") }
+"#;
+    let (mut db, files) = TestDB::with_many_files(source);
+    let file = files[0].file_id(&db);
+    let module = db.module_for_file(file);
+    let map = module.def_map(&db);
+    let mut functions = Vec::new();
+    visit_module(&db, map, module, &mut |def| {
+        if let ModuleDefId::FunctionId(it) = def {
+            functions.push(DefWithBodyId::from(it));
+        }
+    });
+    assert_eq!(functions.len(), 1);
+    InferenceResult::of(&db, functions[0]);
+    let projection = hir_def::expr_store::Body::for_inference(&db, functions[0]).clone();
+    for changed in [source.replace("first", "other"), source.replace("first", "a longer string")] {
+        db.set_file_text(file, &changed);
+        let (executed, _) = db.log_executed(|| {
+            InferenceResult::of(&db, functions[0]);
+        });
+        assert_eq!(hir_def::expr_store::Body::for_inference(&db, functions[0]), &projection);
+        assert!(
+            !executed.iter().any(|query| query.contains("InferenceResult < 'db >::for_body_")),
+            "string contents changed, but their type did not: {executed:#?}",
+        );
+    }
+}
+
+#[test]
+fn byte_string_length_changes_still_invalidate_inference() {
+    let source = r#"fn render() -> &'static [u8; 3] { b"one" }"#;
+    let (mut db, files) = TestDB::with_many_files(source);
+    let file = files[0].file_id(&db);
+    let module = db.module_for_file(file);
+    let mut function = None;
+    visit_module(&db, module.def_map(&db), module, &mut |def| {
+        if let ModuleDefId::FunctionId(it) = def {
+            function = Some(DefWithBodyId::from(it));
+        }
+    });
+    let function = function.unwrap();
+    assert!(!InferenceResult::of(&db, function).has_type_mismatches());
+    db.set_file_text(file, &source.replace("one", "four"));
+    assert!(InferenceResult::of(&db, function).has_type_mismatches());
+}
+
+#[test]
+fn string_const_length_changes_still_invalidate_inference() {
+    let source = r#"//- minicore: sized, transmute
+const fn length(value: &str) -> usize {
+    unsafe { core::mem::transmute::<&str, (*const u8, usize)>(value).1 }
+}
+fn render() { let value: [u8; length("one")] = [0; 3]; }
+"#;
+    let (mut db, files) = TestDB::with_many_files(source);
+    let file = files[0].file_id(&db);
+    let module = db.module_for_file(file);
+    let mut function = None;
+    visit_module(&db, module.def_map(&db), module, &mut |def| {
+        if let ModuleDefId::FunctionId(it) = def {
+            function = Some(DefWithBodyId::from(it));
+        }
+    });
+    let function = function.unwrap();
+    assert!(!InferenceResult::of(&db, function).has_type_mismatches());
+    db.set_file_text(file, &source.replace("one", "four"));
+    assert!(InferenceResult::of(&db, function).has_type_mismatches());
+}
+
+#[test]
+fn string_const_arguments_keep_their_values() {
+    let source = r#"#![feature(adt_const_params, unsized_const_params)]
+struct Label<const TEXT: &'static str>;
+fn render() -> Label<"one"> { Label::<"one"> }
+"#;
+    let (mut db, files) = TestDB::with_many_files(source);
+    let file = files[0].file_id(&db);
+    let module = db.module_for_file(file);
+    let mut function = None;
+    visit_module(&db, module.def_map(&db), module, &mut |def| {
+        if let ModuleDefId::FunctionId(it) = def {
+            function = Some(DefWithBodyId::from(it));
+        }
+    });
+    let function = function.unwrap();
+    assert!(!InferenceResult::of(&db, function).has_type_mismatches());
+    db.set_file_text(file, &source.replace("Label::<\"one\">", "Label::<\"other\">"));
+    assert!(InferenceResult::of(&db, function).has_type_mismatches());
 }
