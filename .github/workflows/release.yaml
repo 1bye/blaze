@@ -11,9 +11,12 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 90
     steps:
+      - name: Require Apple Silicon
+        shell: bash
+        run: test "$(uname -m)" = arm64
       - uses: actions/checkout@v7
       - name: Pinned compiler and native-server development libraries
         run: rustup toolchain install "$(cat harness/toolchain)" --profile minimal --component rustc-dev
