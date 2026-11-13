@@ -39,7 +39,7 @@ use blaze_resolve::{
     Cfg, Dependency, IndexSummary, InternedString, MemRegistry, PackageId, PackageIdSpec,
     PartialVersion, Platform, QueryKind, Registry, ResolveVersion, RustVersion, SourceId, Summary,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub use crate::summary::Read;
 
@@ -665,7 +665,7 @@ fn resolving_with<R>(
         None => Vec::new(),
     };
     // The registry packages the resolve picks that the lock file does not pin.
-    let picked: Vec<Package>;
+    let mut picked: Vec<Package>;
 
     let mut serialized: Vec<SerializedPackage<'_>> =
         ws.members().map(|(path, m)| export_package(path, m)).collect();
@@ -762,9 +762,16 @@ fn resolving_with<R>(
     if let Some(lock) = &lock {
         whole.merge_from(lock)?;
     }
-    let unread: Vec<PackageId> =
-        locked_ids(&whole).into_iter().filter(|id| !reads.contains_key(id)).collect();
-    picked = fetch(&unread, whole.checksums(), &ctx, &sources)?;
+    // A dependency feature requested directly on the command line can add packages
+    // absent from the all-workspace-features resolve (and hence Cargo.lock). Read both
+    // graphs, without changing which graph Cargo writes to the lock file.
+    let mut seen: FxHashSet<PackageId> = reads.keys().copied().collect();
+    picked = Vec::new();
+    for resolve in [&whole, &targeted] {
+        let unread: Vec<PackageId> =
+            locked_ids(resolve).into_iter().filter(|id| seen.insert(*id)).collect();
+        picked.extend(fetch(&unread, resolve.checksums(), &ctx, &sources)?);
+    }
     for package in &picked {
         let mut it = export_package(&package.manifest_path, &package.manifest);
         if let Some(source) = &package.locked_source {
@@ -772,7 +779,9 @@ fn resolving_with<R>(
         }
         let mut read = summary::read(&serde_json::to_value(&it)?)?;
         let id = read.summary.package_id();
-        if let Some(Some(checksum)) = whole.checksums().get(&id) {
+        if let Some(Some(checksum)) =
+            whole.checksums().get(&id).or_else(|| targeted.checksums().get(&id))
+        {
             read.summary.set_checksum(checksum.clone());
         }
         serialized.push(it);

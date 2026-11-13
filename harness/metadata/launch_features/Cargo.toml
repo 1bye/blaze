@@ -1,0 +1,10 @@
+[package]
+name = "launch-features"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+exclude = ["facade"]
+[features]
+live = []
+[dependencies]
+facade = { path = "facade" }

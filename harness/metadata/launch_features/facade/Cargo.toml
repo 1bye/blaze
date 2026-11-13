@@ -1,0 +1,8 @@
+[package]
+name = "facade"
+version = "0.1.0"
+edition = "2024"
+[features]
+devtools = ["dep:hdrhistogram"]
+[dependencies]
+hdrhistogram = { version = "=7.5.4", optional = true, default-features = false }
