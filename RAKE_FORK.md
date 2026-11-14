@@ -1,6 +1,7 @@
-# Rake Blaze fork (local preparation)
+# Rake Blaze fork
 
-Apple Silicon-only pinned hybrid distribution. Nothing has been published.
+Apple Silicon-only pinned hybrid distribution. The rake.1 and rake.2 prereleases
+are published in `1bye/blaze`; rake.3 adds the launch-feature manifest fix.
 
 ## Verified upstream history
 
@@ -13,6 +14,17 @@ The recovered root snapshot `2007d7c` differs from this base by 30 files, +862/-
 The seven requested engine fixes are separate commits: confined WASI realpath with existence-sensitive cache keys; cross-file span_join returns None; `blaze.std::` symbols and std cache bump; module_path substitution in symbol attributes; canonical CARGO; real rustc build-script probes in hybrid mode; AArch64 NEON intrinsics. A separate native-server build commit selects and bundles the matching fixed toolchain server. A separate release commit defines this distribution.
 
 The snapshot also contained eight earlier lab fixes, preserved as explicit prerequisite commits rather than hidden inside a root snapshot: job limits and NUM_JOBS keys; per-macro Wasm graph roots; bounded synchronous Wasm preparation; Wasm inlining; MIR storage conflict deltas; linker-used data and verbatim symbols; C ABI projected-field normalization; x86 AES keygen assist. The job-limit commit includes a missing test fixture profile field. There is no other unexplained snapshot source drift. See RAKE_PATCHES.md and the clean commit list.
+
+## Changes after the initial fork release
+
+- rake.2: reuse inference after string text edits (`d72f0bcab`), retaining format,
+  byte-string and caller-location correctness checks.
+- rake.3: load manifests introduced only by requested dependency features
+  (`94016f1d7`), using the matching resolver graph's checksums. This fixes the
+  `no manifest of hdrhistogram v7.6.0 was read` failure under `rake dev --live --cdp`.
+  Cargo.lock still uses Cargo's broad graph, with no app-level `devtools` forwarding
+  feature required. `harness/metadata_launch_features.py` compares nine cases
+  against pinned Cargo, including feature toggles and stale `--locked` rejection.
 
 ## Build and archive
 
